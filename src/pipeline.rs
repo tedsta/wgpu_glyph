@@ -138,6 +138,7 @@ impl<Depth> Pipeline<Depth> {
                 size: mem::size_of::<Instance>() as u64
                     * instances.len() as u64,
                 usage: wgpu::BufferUsage::VERTEX | wgpu::BufferUsage::COPY_DST,
+                mapped_at_creation: true,
             });
 
             self.supported_instances = instances.len();
@@ -191,7 +192,8 @@ fn build<D>(
         mipmap_filter: filter_mode,
         lod_min_clamp: 0.0,
         lod_max_clamp: 0.0,
-        compare: wgpu::CompareFunction::Always,
+        compare: Some(wgpu::CompareFunction::Always),
+        ..Default::default()
     });
 
     let cache = Cache::new(device, cache_width, cache_height);
@@ -200,25 +202,28 @@ fn build<D>(
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("wgpu_glyph::Pipeline uniforms"),
             bindings: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStage::VERTEX,
-                    ty: wgpu::BindingType::UniformBuffer { dynamic: false },
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStage::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler { comparison: false },
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStage::FRAGMENT,
-                    ty: wgpu::BindingType::SampledTexture {
+                wgpu::BindGroupLayoutEntry::new(
+                    0,
+                    wgpu::ShaderStage::VERTEX,
+                    wgpu::BindingType::UniformBuffer {
+                        dynamic: false,
+                        min_binding_size: None,
+                    },
+                ),
+                wgpu::BindGroupLayoutEntry::new(
+                    1,
+                    wgpu::ShaderStage::FRAGMENT,
+                    wgpu::BindingType::Sampler { comparison: false },
+                ),
+                wgpu::BindGroupLayoutEntry::new(
+                    2,
+                    wgpu::ShaderStage::FRAGMENT,
+                    wgpu::BindingType::SampledTexture {
                         dimension: wgpu::TextureViewDimension::D2,
                         component_type: wgpu::TextureComponentType::Float,
                         multisampled: false,
                     },
-                },
+                ),
             ],
         });
 
@@ -235,6 +240,7 @@ fn build<D>(
         size: mem::size_of::<Instance>() as u64
             * Instance::INITIAL_AMOUNT as u64,
         usage: wgpu::BufferUsage::VERTEX | wgpu::BufferUsage::COPY_DST,
+        mapped_at_creation: false,
     });
 
     let layout =
@@ -244,12 +250,12 @@ fn build<D>(
 
     let vs = include_bytes!("shader/vertex.spv");
     let vs_module = device.create_shader_module(
-        &wgpu::read_spirv(std::io::Cursor::new(&vs[..])).unwrap(),
+        wgpu::util::make_spirv(&vs[..]),
     );
 
     let fs = include_bytes!("shader/fragment.spv");
     let fs_module = device.create_shader_module(
-        &wgpu::read_spirv(std::io::Cursor::new(&fs[..])).unwrap(),
+        wgpu::util::make_spirv(&fs[..]),
     );
 
     let raw = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -372,13 +378,14 @@ fn draw<D>(
             color_attachments: &[wgpu::RenderPassColorAttachmentDescriptor {
                 attachment: target,
                 resolve_target: None,
-                load_op: wgpu::LoadOp::Load,
-                store_op: wgpu::StoreOp::Store,
-                clear_color: wgpu::Color {
-                    r: 0.0,
-                    g: 0.0,
-                    b: 0.0,
-                    a: 0.0,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 0.0,
+                    }),
+                    store: true,
                 },
             }],
             depth_stencil_attachment,
@@ -386,7 +393,7 @@ fn draw<D>(
 
     render_pass.set_pipeline(&pipeline.raw);
     render_pass.set_bind_group(0, &pipeline.uniforms, &[]);
-    render_pass.set_vertex_buffer(0, &pipeline.instances, 0, 0);
+    render_pass.set_vertex_buffer(0, pipeline.instances.slice(..));
 
     if let Some(region) = region {
         render_pass.set_scissor_rect(
@@ -413,10 +420,7 @@ fn create_uniforms(
         bindings: &[
             wgpu::Binding {
                 binding: 0,
-                resource: wgpu::BindingResource::Buffer {
-                    buffer: transform,
-                    range: 0..64,
-                },
+                resource: wgpu::BindingResource::Buffer(transform.slice(0..64)),
             },
             wgpu::Binding {
                 binding: 1,
